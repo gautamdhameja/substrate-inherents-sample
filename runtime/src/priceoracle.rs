@@ -5,12 +5,17 @@ use parity_codec::{Decode};
 #[cfg(feature = "std")]
 use inherents::{ProvideInherentData};
 use inherents::{RuntimeString, InherentIdentifier, ProvideInherent, MakeFatalError, InherentData};
+use runtime_io;
 
 pub const INHERENT_IDENTIFIER: InherentIdentifier = *b"btcusd00";
+pub const QUEUE_CAPACITY: u32 = 10;
+
+//assuming the btc price could deviate by this number (USD) between consecutive values
+pub const MAX_DRIFT: u64 = 100;
 
 // `f64` would be a better InherentType in this case.
 // TODO: figure out how to implement the required traits for `f64`.
-pub type InherentType = Vec<u64>;
+pub type InherentType = u64;
 
 pub trait BtcPriceInherentData {
 	fn btcusd_inherent_data(&self) -> Result<InherentType, RuntimeString>;
@@ -32,29 +37,9 @@ impl ProvideInherentData for InherentDataProvider {
 		&INHERENT_IDENTIFIER
 	}
 
-	// Is there a way to access the module's storage from here?
-	// At the moment, we are initializing the queue if it doesn't already exist and
-	// storing it as a `Vec` in the inherent data storage.
-	// If we could access the module storage, should we store the queue there?
 	fn provide_inherent_data(&self, inherent_data: &mut InherentData) -> Result<(), RuntimeString> {
 		use reqwest;
 		use serde_json::{Value};
-		use std::collections::VecDeque;
-		let mut queue: VecDeque<u64>;
-
-		let data = inherent_data.btcusd_inherent_data();
-
-		match data {
-			Err(_) => {
-				queue = VecDeque::with_capacity(10);
-			 }
-			_ => {
-				println!("{:?}", data.clone().unwrap());
-				queue = data.unwrap().into();
-			 }
-		}
-
-		println!("{:?}", queue.capacity());
 
 		reqwest::get("https://api.coindesk.com/v1/bpi/currentprice.json")
 		.map_err(|_| {
@@ -67,22 +52,7 @@ impl ProvideInherentData for InherentDataProvider {
 				let v: Value = serde_json::from_str(&body).unwrap();
 				let v_price = &v["bpi"]["USD"]["rate_float"];
 				let price: u64 = v_price.as_f64().unwrap().round() as u64;
-				
-				// if the queue has reached max capacity, remove the first inserted element.
-				// Add the new price to the end.
-				// This makes sure that we have a fixed capacity rotating window.
-				
-				// TODO: fix this
-				if queue.len() == queue.capacity() {
-					queue.pop_front();
-				}
-
-				queue.push_back(price);
-				println!("{:?}", queue.capacity());
-				println!("{:?}", queue.len());
-				println!("{:?}", queue);
-				let vec = Vec::from(queue);
-				inherent_data.put_data(INHERENT_IDENTIFIER, &vec)
+				inherent_data.put_data(INHERENT_IDENTIFIER, &price)
 			})
 		})
 	}
@@ -99,9 +69,8 @@ decl_module! {
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		fn set(origin, price: u64) {
 			ensure_inherent(origin)?;
-
-			// TODO: Add assetion logic to check the price is within a threshold.
-
+			Self::insert_into_queue(price);
+			Self::get_verify_median(price);
 			<Self as Store>::BtcPrice::put(price);
 		}
 	}
@@ -110,20 +79,8 @@ decl_module! {
 decl_storage! {
 	trait Store for Module<T: Trait> as InherentSample {
 		pub BtcPrice get(btc_price): u64;
-		PriceData: Option<Vec<u64>>;
+		PriceData get(price_data): Vec<u64>;
 	}
-}
-
-impl<T: Trait> Module<T> {
-	pub fn get_current_price() -> u64 {
-		Self::btc_price()
-	}
-}
-
-fn extract_inherent_data(data: &InherentData) -> Result<InherentType, RuntimeString> {
-	data.get_data::<InherentType>(&INHERENT_IDENTIFIER)
-		.map_err(|_| RuntimeString::from("Invalid inherent data encoding."))?
-		.ok_or_else(|| "Inherent data is not provided.".into())
 }
 
 // Following two functions (mean and median) taken from:
@@ -144,15 +101,48 @@ fn median(numbers: &mut Vec<u64>) -> u64 {
     }
 }
 
+impl<T: Trait> Module<T> {
+	pub fn get_current_price() -> u64 {
+		Self::btc_price()
+	}
+
+	// Insert into queue.
+	// If capacity had been reached, remove and insert (FIFO).
+	fn insert_into_queue(item: u64) {
+		let mut queue = Self::price_data();
+		if queue.len() as u32 == QUEUE_CAPACITY {
+			queue.remove(0);
+			queue.push(item);
+		} else {
+			queue.push(item);
+		}
+
+		runtime_io::print(queue.len() as u64);
+		<Self as Store>::PriceData::put(queue);
+	}
+
+	// Calculate median of the price data in the queue.
+	// Verify if the median does not shift by MAX_DRIFT with the latest price submitted as inherent.
+	fn get_verify_median(price: u64) {
+		let median_val = median(&mut Self::price_data());
+		assert!(median_val - price <= MAX_DRIFT || price - median_val <= MAX_DRIFT, "Price value drifts more than expected!");
+	}
+}
+
+fn extract_inherent_data(data: &InherentData) -> Result<InherentType, RuntimeString> {
+	data.get_data::<InherentType>(&INHERENT_IDENTIFIER)
+		.map_err(|_| RuntimeString::from("Invalid inherent data encoding."))?
+		.ok_or_else(|| "Inherent data is not provided.".into())
+}
+
 impl<T: Trait> ProvideInherent for Module<T> {
 	type Call = Call<T>;
 	type Error = MakeFatalError<RuntimeString>;
 	const INHERENT_IDENTIFIER: InherentIdentifier = INHERENT_IDENTIFIER;
 
 	fn create_inherent(data: &InherentData) -> Option<Self::Call> {
-		let mut data1 = extract_inherent_data(data).expect("Error in extracting inherent data.");
-		let median_val = median(data1.as_mut());
-		Some(Call::set(median_val.into()))
+		let data1 = extract_inherent_data(data).expect("Error in extracting inherent data.");
+		Some(Call::set(data1.into()))
 	}
 
 	// TODO: Implement check_inherent.
