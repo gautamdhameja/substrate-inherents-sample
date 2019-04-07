@@ -1,28 +1,26 @@
 use support::{decl_module, decl_storage, StorageValue};
 use rstd::prelude::*;
 use system::{ensure_inherent};
+#[cfg(feature = "std")]
 use parity_codec::{Decode};
 #[cfg(feature = "std")]
 use inherents::{ProvideInherentData};
 use inherents::{RuntimeString, InherentIdentifier, ProvideInherent, MakeFatalError, InherentData};
-use runtime_io;
 
-pub const INHERENT_IDENTIFIER: InherentIdentifier = *b"btcusd00";
+pub const INHERENT_IDENTIFIER: InherentIdentifier = *b"tknusd00";
 pub const QUEUE_CAPACITY: u32 = 10;
 
-//assuming the btc price could deviate by this number (USD) between consecutive values
+//assuming the API response could deviate by this number (USD) between consecutive values
 pub const MAX_DRIFT: u64 = 100;
 
-// `f64` would be a better InherentType in this case.
-// TODO: figure out how to implement the required traits for `f64`.
 pub type InherentType = u64;
 
-pub trait BtcPriceInherentData {
-	fn btcusd_inherent_data(&self) -> Result<InherentType, RuntimeString>;
+pub trait TknPriceInherentData {
+	fn tknprice_inherent_data(&self) -> Result<InherentType, RuntimeString>;
 }
 
-impl BtcPriceInherentData for InherentData {
-	fn btcusd_inherent_data(&self) -> Result<InherentType, RuntimeString> {
+impl TknPriceInherentData for InherentData {
+	fn tknprice_inherent_data(&self) -> Result<InherentType, RuntimeString> {
 		self.get_data(&INHERENT_IDENTIFIER)
 			.and_then(|r| r.ok_or_else(|| "Inherent data not found".into()))
 	}
@@ -41,9 +39,12 @@ impl ProvideInherentData for InherentDataProvider {
 		use reqwest;
 		use serde_json::{Value};
 
+		// Call a WEB API.
+		// Parse JSON response.
+		// Store the value as inherent_data against the INHERENT_IDENTIFIER defined above.
 		reqwest::get("https://api.coindesk.com/v1/bpi/currentprice.json")
 		.map_err(|_| {
-				"Could not get BTC price from API".into()
+				"Could not get data from the API".into()
 		}).and_then(|mut resp| {
 			resp.text()
 			.map_err(|_| {
@@ -71,14 +72,14 @@ decl_module! {
 			ensure_inherent(origin)?;
 			Self::insert_into_queue(price);
 			Self::get_verify_median(price);
-			<Self as Store>::BtcPrice::put(price);
+			<Self as Store>::TknPrice::put(price);
 		}
 	}
 }
 
 decl_storage! {
-	trait Store for Module<T: Trait> as InherentSample {
-		pub BtcPrice get(btc_price): u64;
+	trait Store for Module<T: Trait> as PriceOracle {
+		pub TknPrice get(tkn_price): u64;
 		PriceData get(price_data): Vec<u64>;
 	}
 }
@@ -103,11 +104,11 @@ fn median(numbers: &mut Vec<u64>) -> u64 {
 
 impl<T: Trait> Module<T> {
 	pub fn get_current_price() -> u64 {
-		Self::btc_price()
+		Self::tkn_price()
 	}
 
 	// Insert into queue.
-	// If capacity had been reached, remove and insert (FIFO).
+	// If capacity has been reached, remove first and insert at the end (FIFO).
 	fn insert_into_queue(item: u64) {
 		let mut queue = Self::price_data();
 		if queue.len() as u32 == QUEUE_CAPACITY {
@@ -117,7 +118,6 @@ impl<T: Trait> Module<T> {
 			queue.push(item);
 		}
 
-		runtime_io::print(queue.len() as u64);
 		<Self as Store>::PriceData::put(queue);
 	}
 

@@ -2,7 +2,7 @@
 
 A Substrate runtime sample showing how to use inherent data in your custom modules.
 
-In this sample, we get the latest Bitcoin price from a WebAPI and store it on-chain using Substrate inherents.
+In this sample, we get some data from a WebAPI and store it on-chain using Substrate inherents.
 
 ## How to use inherents
 
@@ -22,7 +22,7 @@ The `InherentIdentifier` is the unique identifier for your module's inherent dat
 The `InherentType` is the data type for the inherent data of your module.
 
 ```rust
-pub const INHERENT_IDENTIFIER: InherentIdentifier = *b"btcusd00";
+pub const INHERENT_IDENTIFIER: InherentIdentifier = *b"tknusd00";
 pub type InherentType = u64;
 ```
 
@@ -30,7 +30,9 @@ pub type InherentType = u64;
 
 Your module should define an `InherentDataProvider` type and it should implement the `ProvideInherentData` trait. This is how the consensus engine provides the inherent data to the runtime, which should be available at the block production time. The `ProvideInherentData` trait defines a function called `provide_inherent_data` where we get (or calculate) the inherent data and store it in the `InherentData` storage.
 
-In this sample, we get the latest Bitcoin price using a simple Web API call. We then store a rolling window of 10 recent responses from the API as a vector against the `InherentIdentifier` in the `provide_inherent_data` function.
+In this sample, we call a Web API to get some data and we store this data on-chain using Substrate inherents.
+
+**Rolling Median Approach**: Assuming that 50% of the authorities are honest, a rolling median approach could be used to enhance seurity of the solution. In this sample, we collect the last 10 responses from the API in a `Vec` and then compare the most recent value with the median of those 10 values with a predefined drift value. If the difference between the median and the new value is more than the drift then we do not store that value. This could be further extended to punish the dishonest authorities.
 
 ### Register `InherentDataProvider`
 
@@ -48,4 +50,4 @@ The `ProvideInherent` trait also has an optional function `check_inherent` which
 
 ## Note
 
-This sample is only for showing the process or steps involved in using Substrate inherents in runtime modules. This, by no means, is intended to be a tutorial for how to get Bitcoin price or how to build an oracle for it.
+This sample is only for showing the process or steps involved in using Substrate inherents in runtime modules. This, by no means, is intended to be a tutorial for how to build a decentralized oracle. Please do not use this code in production applications without proper review and audits.
